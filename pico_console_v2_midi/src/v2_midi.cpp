@@ -322,6 +322,26 @@ uint32_t read_be32(const uint8_t *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
 }
 
+static bool read_vlq(const uint8_t* data, size_t length, size_t* pos, uint32_t* value) {
+  uint32_t result = 0;
+
+  for (int i = 0; i < 4; i++) {
+    if (*pos >= length) {
+      return false;
+    }
+
+    uint8_t b = data[(*pos)++];
+    result = (result << 7) | (b & 0x7F);
+
+    if (!(b & 0x80)) {
+      *value = result;
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void play_midi(const uint8_t* m) {
   Graphic.setTextColor(LCD_WHITE, LCD_BLACK);
   Graphic.setTextSize(1);
@@ -354,51 +374,181 @@ void play_midi(const uint8_t* m) {
   Graphic.printf("tracks = %d\n", midi_tracks);
   Graphic.printf("division = %d\n", midi_division);
 
-  for(size_t i=0; i<midi_tracks; i++) {
+  uint32_t tempo_us = 500000; // 기본 120 BPM
+
+  for (size_t i = 0; i < midi_tracks; i++) {
     const uint8_t* midi_track = next_midi_track;
-    Graphic.printf("\n--track %d--\n", i);
+
+    Graphic.printf("\n--track %u--\n", i);
+
     // check "MTrk"
-    if(midi_track[0] != 0x4D ||
+    if (midi_track[0] != 0x4D ||
       midi_track[1] != 0x54 ||
       midi_track[2] != 0x72 ||
       midi_track[3] != 0x6B) {
       LOGE("Wrong midi track");
-      Graphic.printf("Wrong midi track %02X%02X%02X%02X", midi_track[0], midi_track[1], midi_track[2], midi_track[3]);
+
+      Graphic.printf(
+        "Wrong midi track %02X%02X%02X%02X",
+        midi_track[0],
+        midi_track[1],
+        midi_track[2],
+        midi_track[3]
+      );
       return;
     }
+
     midi_track += 4;
+
     uint32_t midi_track_length = read_be32(midi_track);
     midi_track += 4;
+
     next_midi_track = midi_track + midi_track_length;
-    Graphic.printf("track_length = %d\n\n", midi_track_length);
 
-    for(size_t j = 0; j < midi_track_length;) {
-      size_t track_delta = 0;
-      uint8_t delta_byte;
+    Graphic.printf("track_length = %u\n\n", midi_track_length);
 
-      do {
-        delta_byte = midi_track[0];
+    size_t pos = 0;
+    uint8_t running_status = 0;
 
-        track_delta = (track_delta << 7) | (delta_byte & 0x7F);
+    while (pos < midi_track_length) {
+      uint32_t track_delta;
 
-        midi_track++;
-        j++;
-      } while ((delta_byte & 0x80) && j < midi_track_length);
-
-      if (j + 3 > midi_track_length) {
+      if (!read_vlq( midi_track, midi_track_length, &pos, &track_delta)) {
+        Graphic.print("Wrong delta\n");
         break;
       }
 
-      uint8_t track_status = midi_track[0];
-      uint8_t track_note = midi_track[1];
-      uint8_t track_velocity = midi_track[2];
-      midi_track += 3;
-      j += 3;
+      if (pos >= midi_track_length) {
+        break;
+      }
 
-      Graphic.printf("delta = %d, ", track_delta);
-      Graphic.printf("cmd = 0x%02X, ch = %d, ", track_status & 0xF0, track_status & 0x0F);
-      Graphic.printf("note = %d, ", track_note);
-      Graphic.printf("velocity = %d\n", track_velocity);
+      uint8_t status;
+
+      if (midi_track[pos] & 0x80) {
+        status = midi_track[pos++];
+
+        if (status < 0xF0) {
+          running_status = status;
+        }
+      } else {
+        // Running Status
+        if (running_status == 0) {
+          Graphic.print("Wrong running status\n");
+          break;
+        }
+
+        status = running_status;
+      }
+
+      /*
+        * 채널 MIDI 이벤트
+        */
+      if (status < 0xF0) {
+        uint8_t cmd = status & 0xF0;
+        uint8_t ch = status & 0x0F;
+
+        uint8_t data_length =
+            (cmd == 0xC0 || cmd == 0xD0) ? 1 : 2;
+
+        if (pos + data_length > midi_track_length) {
+          break;
+        }
+
+        uint8_t data1 = midi_track[pos++];
+        uint8_t data2 = 0;
+
+        if (data_length == 2) {
+          data2 = midi_track[pos++];
+        }
+
+        Graphic.printf("delta = %u, cmd = 0x%02X, ch = %u", track_delta, cmd, ch);
+
+        switch (cmd) {
+          case 0x80:
+            Graphic.printf(", note off = %u, velocity = %u\n", data1, data2);
+            break;
+
+          case 0x90:
+            if (data2 == 0) {
+                Graphic.printf(", note off = %u\n", data1);
+            } else {
+                Graphic.printf(", note on = %u, velocity = %u\n", data1, data2);
+            }
+            break;
+
+          case 0xC0:
+            Graphic.printf(", program = %u\n", data1);
+            break;
+
+          default:
+            Graphic.printf(", data1 = %u, data2 = %u\n", data1, data2);
+            break;
+        }
+
+        continue;
+      }
+
+      /*
+        * Meta Event
+        */
+      if (status == 0xFF) {
+        running_status = 0;
+
+        if (pos >= midi_track_length) {
+          break;
+        }
+
+        uint8_t meta_type = midi_track[pos++];
+
+        uint32_t meta_length;
+
+        if (!read_vlq(midi_track, midi_track_length, &pos, &meta_length)) {
+          break;
+        }
+
+        if (pos + meta_length > midi_track_length) {
+          break;
+        }
+
+        if (meta_type == 0x51 && meta_length == 3) {
+          tempo_us = ((uint32_t)midi_track[pos] << 16) | ((uint32_t)midi_track[pos + 1] << 8) | midi_track[pos + 2];
+
+          Graphic.printf("delta = %u, tempo = %u us, bpm = %u\n", track_delta, tempo_us, 60000000 / tempo_us);
+        } else if (meta_type == 0x2F) {
+          Graphic.printf("delta = %u, end of track\n", track_delta);
+          break;
+        } else {
+          Graphic.printf("delta = %u, meta = 0x%02X, length = %u\n", track_delta, meta_type, meta_length);
+        }
+
+        pos += meta_length;
+        continue;
+      }
+
+      /*
+        * SysEx는 내용만 건너뜀
+        */
+      if (status == 0xF0 || status == 0xF7) {
+        running_status = 0;
+
+        uint32_t sysex_length;
+
+        if (!read_vlq(midi_track, midi_track_length, &pos, &sysex_length)) {
+          break;
+        }
+
+        if (pos + sysex_length > midi_track_length) {
+          break;
+        }
+
+        Graphic.printf("delta = %u, sysex length = %u\n", track_delta, sysex_length);
+
+        pos += sysex_length;
+        continue;
+      }
+
+      Graphic.printf("Unknown status: 0x%02X\n", status);
+      break;
     }
   }
 }
