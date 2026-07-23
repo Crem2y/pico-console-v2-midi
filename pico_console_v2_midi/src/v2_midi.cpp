@@ -348,6 +348,14 @@ void play_midi(const uint8_t* m) {
   Graphic.set_font(G_FONT_5X8);
   Graphic.setCursor(0,0);
 
+  // manual channel setting
+  for(int i=0; i<64; i++) {
+    Audio.set_vol_env(i, 25000, 1);
+    Audio.set_mix(i, 255, 255);
+    Audio.set_wave(i, WAVE_SQUARE_50);
+    sleep_ms(1);
+  }
+
   // check "MThd"
   if(m[0] != 0x4D ||
     m[1] != 0x54 ||
@@ -406,9 +414,10 @@ void play_midi(const uint8_t* m) {
     next_midi_track = midi_track + midi_track_length;
 
     Graphic.printf("track_length = %u\n\n", midi_track_length);
-
+    
     size_t pos = 0;
     uint8_t running_status = 0;
+    uint8_t now_ch = 0; //test
 
     while (pos < midi_track_length) {
       uint32_t track_delta;
@@ -416,6 +425,12 @@ void play_midi(const uint8_t* m) {
       if (!read_vlq( midi_track, midi_track_length, &pos, &track_delta)) {
         Graphic.print("Wrong delta\n");
         break;
+      }
+
+      // test
+      uint32_t delay_us = (uint64_t)track_delta * tempo_us / midi_division;
+      if (delay_us > 0) {
+        sleep_us(delay_us);
       }
 
       if (pos >= midi_track_length) {
@@ -466,13 +481,18 @@ void play_midi(const uint8_t* m) {
         switch (cmd) {
           case 0x80:
             Graphic.printf(", note off = %u, velocity = %u\n", data1, data2);
+            //Audio.stop_note(ch);
             break;
 
           case 0x90:
             if (data2 == 0) {
-                Graphic.printf(", note off = %u\n", data1);
+              Graphic.printf(", note off = %u\n", data1);
+              //Audio.stop_note(ch);
             } else {
-                Graphic.printf(", note on = %u, velocity = %u\n", data1, data2);
+              Graphic.printf(", note on = %u, velocity = %u\n", data1, data2);
+              Audio.play_note_num(now_ch, data1, 32);
+              now_ch++;
+              if(now_ch >= 64) now_ch = 0;
             }
             break;
 
