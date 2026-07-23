@@ -77,6 +77,9 @@ inline int pio_uart_write_wrapper_rf(const uint8_t* data, size_t data_size) {
 #endif
 //////// function ////////
 
+extern uint8_t midi_file_sample[];
+void play_midi(const uint8_t* midi_file);
+
 int main() { // uses core 0 to sub core
   // log init
   uartLog_init(HW_LOG_CH, PIN_LOG_TX, PIN_LOG_RX, HW_LOG_BAUD);
@@ -303,9 +306,100 @@ void core1_entry() { // uses core 1 to main core
   Graphic.fillScreen(LCD_BLACK);
   Graphic.setTextColor(LCD_WHITE, LCD_BLACK);
 
+  play_midi(midi_file_sample);
+
   while (1) {
     // main loop
     sleep_ms(100);
+  }
+}
+
+uint16_t read_be16(const uint8_t *p) {
+    return ((uint16_t)p[0] << 8) | p[1];
+}
+
+uint32_t read_be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+void play_midi(const uint8_t* m) {
+  Graphic.setTextColor(LCD_WHITE, LCD_BLACK);
+  Graphic.setTextSize(1);
+  Graphic.set_font(G_FONT_5X8);
+  Graphic.setCursor(0,0);
+
+  // check "MThd"
+  if(m[0] != 0x4D ||
+    m[1] != 0x54 ||
+    m[2] != 0x68 ||
+    m[3] != 0x64) {
+    LOGE("Not a midi file");
+    Graphic.print("Not a midi file");
+    return;
+  }
+  m += 4;
+
+  // midi header (big endian)
+  uint32_t midi_header_length = read_be32(m);
+  m += 4;
+  const uint8_t* next_midi_track = m + midi_header_length;
+  uint16_t midi_format = read_be16(m);
+  m += 2;
+  uint16_t midi_tracks = read_be16(m);
+  m += 2;
+  uint16_t midi_division = read_be16(m);
+
+  Graphic.printf("header_length = %d\n", midi_header_length);
+  Graphic.printf("format = %d\n", midi_format);
+  Graphic.printf("tracks = %d\n", midi_tracks);
+  Graphic.printf("division = %d\n", midi_division);
+
+  for(size_t i=0; i<midi_tracks; i++) {
+    const uint8_t* midi_track = next_midi_track;
+    Graphic.printf("\n--track %d--\n", i);
+    // check "MTrk"
+    if(midi_track[0] != 0x4D ||
+      midi_track[1] != 0x54 ||
+      midi_track[2] != 0x72 ||
+      midi_track[3] != 0x6B) {
+      LOGE("Wrong midi track");
+      Graphic.printf("Wrong midi track %02X%02X%02X%02X", midi_track[0], midi_track[1], midi_track[2], midi_track[3]);
+      return;
+    }
+    midi_track += 4;
+    uint32_t midi_track_length = read_be32(midi_track);
+    midi_track += 4;
+    next_midi_track = midi_track + midi_track_length;
+    Graphic.printf("track_length = %d\n\n", midi_track_length);
+
+    for(size_t j = 0; j < midi_track_length;) {
+      size_t track_delta = 0;
+      uint8_t delta_byte;
+
+      do {
+        delta_byte = midi_track[0];
+
+        track_delta = (track_delta << 7) | (delta_byte & 0x7F);
+
+        midi_track++;
+        j++;
+      } while ((delta_byte & 0x80) && j < midi_track_length);
+
+      if (j + 3 > midi_track_length) {
+        break;
+      }
+
+      uint8_t track_status = midi_track[0];
+      uint8_t track_note = midi_track[1];
+      uint8_t track_velocity = midi_track[2];
+      midi_track += 3;
+      j += 3;
+
+      Graphic.printf("delta = %d, ", track_delta);
+      Graphic.printf("cmd = 0x%02X, ch = %d, ", track_status & 0xF0, track_status & 0x0F);
+      Graphic.printf("note = %d, ", track_note);
+      Graphic.printf("velocity = %d\n", track_velocity);
+    }
   }
 }
 
