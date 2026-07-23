@@ -6,7 +6,7 @@
 #define HW_INFO_SUPPORT 0x00000000 //placeholder
 
 // software info
-#define SW_INFO_VERSION 0x1000 // V1.0.00
+#define SW_INFO_VERSION 0x1001 // V1.0.01
 #define SW_INFO_SUPPORT 0x00000000 //placeholder
 
 // build date
