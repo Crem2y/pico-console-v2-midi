@@ -40,3 +40,5 @@
 #include "vibration.hpp"
 #include "imu.hpp"
 #include "ir_link.hpp"
+
+void play_midi(const uint8_t* midi_file);
