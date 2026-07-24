@@ -79,6 +79,7 @@ inline int pio_uart_write_wrapper_rf(const uint8_t* data, size_t data_size) {
 
 #define MIDI_FILE_SIZE (1 * 1024 * 1024) // 1MB
 unsigned char* midi_file = (unsigned char*)PSRAM_BASE + MIDI_FILE_SIZE;
+char midi_file_name[512] = "";
 
 void midi_file_selector(void);
 void load_midi(const char *path);
@@ -198,7 +199,6 @@ int main() { // uses core 0 to sub core
       sd_timer = now_time;
       Sd.update();
     }
-    usbDevice_update();
   }
 
   return 0;
@@ -307,11 +307,17 @@ void core1_entry() { // uses core 1 to main core
     Audio.play_music(&boot_music, false);
   }
 
-  Graphic.fillScreen(LCD_BLACK);
-  Graphic.setTextColor(LCD_WHITE, LCD_BLACK);
-
   while (1) {
+    Graphic.fillScreen(LCD_BLACK);
+    Graphic.setTextColor(LCD_WHITE, LCD_BLACK);
     midi_file_selector();
+
+    Graphic.fillScreen(LCD_BLACK);
+    Graphic.setTextColor(LCD_WHITE, LCD_BLACK);
+    Graphic.set_font(G_FONT_16);
+    Graphic.setCursor(0,0);
+    Graphic.printf("Now playing : %s", midi_file_name);
+
     play_midi(midi_file);
   }
 }
@@ -479,8 +485,10 @@ void midi_file_selector(void) {
           if(file_reading) {
             memset(midi_file, 0x00, MIDI_FILE_SIZE);
 
+            // get midi file name
+            strncpy(midi_file_name, cursor_path, 512);
             Graphic.printf("Loading MIDI '%s'...", cursor_path);
-            load_midi(cursor_path);
+            load_midi(midi_file_name);
             Graphic.print("ok\n");
             Graphic.set_font(G_FONT_5X8);
             return;
@@ -559,7 +567,7 @@ int8_t midi_channel_note[64];
 void play_midi_note(uint8_t note) {
   static uint8_t steal_ch = 0;
 
-  // 이미 재생 중인 같은 노트 확인
+  // fine same note
   for (uint8_t ch = 0; ch < 64; ch++) {
     if (midi_channel_note[ch] == note) {
       Audio.play_note_num(ch, note, 32);
@@ -567,7 +575,7 @@ void play_midi_note(uint8_t note) {
     }
   }
 
-  // 빈 채널 찾기
+  // find empty channel
   for (uint8_t ch = 0; ch < 64; ch++) {
     if (midi_channel_note[ch] == -1) {
       midi_channel_note[ch] = note;
@@ -576,7 +584,7 @@ void play_midi_note(uint8_t note) {
     }
   }
 
-  // 빈 채널이 없으면 순서대로 하나를 뺏음
+  // if there is no empty channel, steal the channel
   //Audio.stop_note(steal_ch);
 
   midi_channel_note[steal_ch] = note;
@@ -646,7 +654,7 @@ void play_midi(const uint8_t* m) {
   LOGI("tracks = %d\n", midi_tracks);
   LOGI("division = %d\n", midi_division);
 
-  uint32_t tempo_us = 500000; // 기본 120 BPM
+  uint32_t tempo_us = 500000; // 120 BPM
 
   for (size_t i = 0; i < midi_tracks; i++) {
     const uint8_t* midi_track = next_midi_track;
@@ -712,9 +720,7 @@ void play_midi(const uint8_t* m) {
         status = running_status;
       }
 
-      /*
-        * 채널 MIDI 이벤트
-        */
+      // Channel midi event
       if (status < 0xF0) {
         uint8_t cmd = status & 0xF0;
         uint8_t ch = status & 0x0F;
@@ -765,9 +771,7 @@ void play_midi(const uint8_t* m) {
         continue;
       }
 
-      /*
-        * Meta Event
-        */
+      // Meta Event
       if (status == 0xFF) {
         running_status = 0;
 
@@ -802,9 +806,7 @@ void play_midi(const uint8_t* m) {
         continue;
       }
 
-      /*
-        * SysEx는 내용만 건너뜀
-        */
+      // SysEx
       if (status == 0xF0 || status == 0xF7) {
         running_status = 0;
 
