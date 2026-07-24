@@ -77,7 +77,11 @@ inline int pio_uart_write_wrapper_rf(const uint8_t* data, size_t data_size) {
 #endif
 //////// function ////////
 
-extern uint8_t midi_file_sample[];
+#define MIDI_FILE_SIZE (1 * 1024 * 1024) // 1MB
+unsigned char* midi_file = (unsigned char*)PSRAM_BASE + MIDI_FILE_SIZE;
+
+extern uint8_t midi_file_sample[]; //test
+extern size_t midi_file_sample_size; //test
 void play_midi(const uint8_t* midi_file);
 
 int main() { // uses core 0 to sub core
@@ -306,11 +310,13 @@ void core1_entry() { // uses core 1 to main core
   Graphic.fillScreen(LCD_BLACK);
   Graphic.setTextColor(LCD_WHITE, LCD_BLACK);
 
-  play_midi(midi_file_sample);
-
   while (1) {
-    // main loop
-    sleep_ms(100);
+    memcpy(midi_file, midi_file_sample, midi_file_sample_size);
+    play_midi(midi_file);
+
+    while(!Gamepad.is_btn_pressed(BTN_START)) {
+      sleep_ms(100);
+    }
   }
 }
 
@@ -342,11 +348,63 @@ static bool read_vlq(const uint8_t* data, size_t length, size_t* pos, uint32_t* 
   return false;
 }
 
+int8_t midi_channel_note[64];
+
+void play_midi_note(uint8_t note) {
+  static uint8_t steal_ch = 0;
+
+  // 이미 재생 중인 같은 노트 확인
+  for (uint8_t ch = 0; ch < 64; ch++) {
+    if (midi_channel_note[ch] == note) {
+      Audio.play_note_num(ch, note, 32);
+      return;
+    }
+  }
+
+  // 빈 채널 찾기
+  for (uint8_t ch = 0; ch < 64; ch++) {
+    if (midi_channel_note[ch] == -1) {
+      midi_channel_note[ch] = note;
+      Audio.play_note_num(ch, note, 32);
+      return;
+    }
+  }
+
+  // 빈 채널이 없으면 순서대로 하나를 뺏음
+  //Audio.stop_note(steal_ch);
+
+  midi_channel_note[steal_ch] = note;
+  Audio.play_note_num(steal_ch, note, 32);
+
+  steal_ch++;
+  if (steal_ch >= 64) {
+    steal_ch = 0;
+  }
+}
+
+void stop_midi_note(uint8_t note) {
+  for (uint8_t ch = 0; ch < 64; ch++) {
+    if (midi_channel_note[ch] == note) {
+      Audio.stop_note(ch);
+      midi_channel_note[ch] = -1;
+      return;
+    }
+  }
+}
+
 void play_midi(const uint8_t* m) {
   Graphic.setTextColor(LCD_WHITE, LCD_BLACK);
   Graphic.setTextSize(1);
   Graphic.set_font(G_FONT_5X8);
   Graphic.setCursor(0,0);
+
+  //test
+  uartLog_set_level(LOG_TRACE);
+
+  //test
+  for(int i=0; i<64; i++) {
+    midi_channel_note[i] = -1;
+  }
 
   // manual channel setting
   for(int i=0; i<64; i++) {
@@ -377,32 +435,25 @@ void play_midi(const uint8_t* m) {
   m += 2;
   uint16_t midi_division = read_be16(m);
 
-  Graphic.printf("header_length = %d\n", midi_header_length);
-  Graphic.printf("format = %d\n", midi_format);
-  Graphic.printf("tracks = %d\n", midi_tracks);
-  Graphic.printf("division = %d\n", midi_division);
+  LOGI("header_length = %d\n", midi_header_length);
+  LOGI("format = %d\n", midi_format);
+  LOGI("tracks = %d\n", midi_tracks);
+  LOGI("division = %d\n", midi_division);
 
   uint32_t tempo_us = 500000; // 기본 120 BPM
 
   for (size_t i = 0; i < midi_tracks; i++) {
     const uint8_t* midi_track = next_midi_track;
 
-    Graphic.printf("\n--track %u--\n", i);
+    LOGI("--track %u--\n", i);
 
     // check "MTrk"
     if (midi_track[0] != 0x4D ||
       midi_track[1] != 0x54 ||
       midi_track[2] != 0x72 ||
       midi_track[3] != 0x6B) {
-      LOGE("Wrong midi track");
-
-      Graphic.printf(
-        "Wrong midi track %02X%02X%02X%02X",
-        midi_track[0],
-        midi_track[1],
-        midi_track[2],
-        midi_track[3]
-      );
+      LOGE("Wrong midi track %02X%02X%02X%02X", midi_track[0], midi_track[1], midi_track[2], midi_track[3]);
+      Graphic.printf("Wrong midi track");
       return;
     }
 
@@ -413,7 +464,7 @@ void play_midi(const uint8_t* m) {
 
     next_midi_track = midi_track + midi_track_length;
 
-    Graphic.printf("track_length = %u\n\n", midi_track_length);
+    LOGI("track_length = %u\n\n", midi_track_length);
     
     size_t pos = 0;
     uint8_t running_status = 0;
@@ -423,7 +474,7 @@ void play_midi(const uint8_t* m) {
       uint32_t track_delta;
 
       if (!read_vlq( midi_track, midi_track_length, &pos, &track_delta)) {
-        Graphic.print("Wrong delta\n");
+        LOGW("Wrong delta\n");
         break;
       }
 
@@ -448,7 +499,7 @@ void play_midi(const uint8_t* m) {
       } else {
         // Running Status
         if (running_status == 0) {
-          Graphic.print("Wrong running status\n");
+          LOGW("Wrong running status\n");
           break;
         }
 
@@ -476,32 +527,32 @@ void play_midi(const uint8_t* m) {
           data2 = midi_track[pos++];
         }
 
-        Graphic.printf("delta = %u, cmd = 0x%02X, ch = %u", track_delta, cmd, ch);
+        LOGT("delta = %u, cmd = 0x%02X, ch = %u", track_delta, cmd, ch);
 
         switch (cmd) {
           case 0x80:
-            Graphic.printf(", note off = %u, velocity = %u\n", data1, data2);
-            //Audio.stop_note(ch);
+            LOGT(", note off = %u, velocity = %u\n", data1, data2);
+            stop_midi_note(data1);
             break;
 
           case 0x90:
             if (data2 == 0) {
-              Graphic.printf(", note off = %u\n", data1);
-              //Audio.stop_note(ch);
+              LOGT(", note off = %u\n", data1);
+              stop_midi_note(data1);
             } else {
-              Graphic.printf(", note on = %u, velocity = %u\n", data1, data2);
-              Audio.play_note_num(now_ch, data1, 32);
+              LOGT(", note on = %u, velocity = %u\n", data1, data2);
+              play_midi_note(data1);
               now_ch++;
               if(now_ch >= 64) now_ch = 0;
             }
             break;
 
           case 0xC0:
-            Graphic.printf(", program = %u\n", data1);
+            LOGT(", program = %u\n", data1);
             break;
 
           default:
-            Graphic.printf(", data1 = %u, data2 = %u\n", data1, data2);
+            LOGT(", data1 = %u, data2 = %u\n", data1, data2);
             break;
         }
 
@@ -533,12 +584,12 @@ void play_midi(const uint8_t* m) {
         if (meta_type == 0x51 && meta_length == 3) {
           tempo_us = ((uint32_t)midi_track[pos] << 16) | ((uint32_t)midi_track[pos + 1] << 8) | midi_track[pos + 2];
 
-          Graphic.printf("delta = %u, tempo = %u us, bpm = %u\n", track_delta, tempo_us, 60000000 / tempo_us);
+          LOGT("delta = %u, tempo = %u us, bpm = %u\n", track_delta, tempo_us, 60000000 / tempo_us);
         } else if (meta_type == 0x2F) {
-          Graphic.printf("delta = %u, end of track\n", track_delta);
+          LOGT("delta = %u, end of track\n", track_delta);
           break;
         } else {
-          Graphic.printf("delta = %u, meta = 0x%02X, length = %u\n", track_delta, meta_type, meta_length);
+          LOGT("delta = %u, meta = 0x%02X, length = %u\n", track_delta, meta_type, meta_length);
         }
 
         pos += meta_length;
@@ -561,13 +612,13 @@ void play_midi(const uint8_t* m) {
           break;
         }
 
-        Graphic.printf("delta = %u, sysex length = %u\n", track_delta, sysex_length);
+        LOGT("delta = %u, sysex length = %u\n", track_delta, sysex_length);
 
         pos += sysex_length;
         continue;
       }
 
-      Graphic.printf("Unknown status: 0x%02X\n", status);
+      LOGW("Unknown status: 0x%02X\n", status);
       break;
     }
   }
