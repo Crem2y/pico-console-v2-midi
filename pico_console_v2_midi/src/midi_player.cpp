@@ -89,9 +89,26 @@ static void midi_reset_state(void) {
 }
 
 static wave_t midi_program_to_wave(uint8_t program) {
-    (void)program;
+    static const wave_t wave_table[16] = {
+        WAVE_TRIANGLE,   // 0~7: Piano
+        WAVE_SINE,       // 8~15: Chromatic Percussion
+        WAVE_SQUARE_50,  // 16~23: Organ
+        WAVE_SAWTOOTH,   // 24~31: Guitar
+        WAVE_SQUARE_25,  // 32~39: Bass
+        WAVE_SAWTOOTH,   // 40~47: Strings
+        WAVE_SAWTOOTH,   // 48~55: Ensemble
+        WAVE_SQUARE_25,  // 56~63: Brass
+        WAVE_SQUARE_50,  // 64~71: Reed
+        WAVE_SINE,       // 72~79: Pipe
+        WAVE_SQUARE_50,  // 80~87: Synth Lead
+        WAVE_TRIANGLE,   // 88~95: Synth Pad
+        WAVE_SINE,       // 96~103: Synth Effects
+        WAVE_SAWTOOTH,   // 104~111: Ethnic
+        WAVE_NOISE,      // 112~119: Percussive
+        WAVE_NOISE       // 120~127: Sound Effects
+    };
 
-    return WAVE_SQUARE_50;
+    return wave_table[program >> 3];
 }
 
 static void midi_apply_pan(uint8_t voice, uint8_t pan) {
@@ -114,7 +131,7 @@ static uint8_t midi_calculate_volume(uint8_t midi_ch, uint8_t velocity) {
                       midi_channels[midi_ch].volume *
                       midi_channels[midi_ch].expression;
 
-    return volume * 32 / (127 * 127 * 127);
+    return volume * 31 / (127 * 127 * 127);
 }
 
 static uint8_t midi_allocate_voice(void) {
@@ -135,6 +152,64 @@ static uint8_t midi_allocate_voice(void) {
     }
 
     return oldest_voice;
+}
+
+static void play_midi_drum(uint8_t note, uint8_t velocity) {
+    uint8_t play_note;
+    wave_t wave;
+
+    switch (note) {
+        case 35:
+        case 36:
+            play_note = 24;
+            wave = WAVE_TRIANGLE;
+            break;
+
+        case 38:
+        case 40:
+            play_note = 36;
+            wave = WAVE_NOISE;
+            break;
+
+        case 41:
+        case 43:
+        case 45:
+        case 47:
+        case 48:
+        case 50:
+            play_note = 55 + (note - 41);
+            wave = WAVE_TRIANGLE;
+            break;
+
+        case 42:
+        case 44:
+        case 46:
+        case 49:
+        case 51:
+            play_note = 42;
+            wave = WAVE_NOISE;
+            break;
+
+        default:
+            play_note = 36;
+            wave = WAVE_NOISE;
+            break;
+    }
+
+    uint8_t voice = midi_allocate_voice();
+
+    if (midi_voices[voice].active) {
+        Audio.stop_note(voice);
+    }
+
+    Audio.set_wave(voice, wave);
+    Audio.set_mix(voice, 255, 255);
+    Audio.play_note_num(voice, play_note, velocity / 2);
+
+    midi_voices[voice].active = true;
+    midi_voices[voice].midi_ch = 9;
+    midi_voices[voice].note = note;
+    midi_voices[voice].age = midi_voice_age++;
 }
 
 static void play_midi_note(uint8_t midi_ch, uint8_t note, uint8_t velocity) {
@@ -243,6 +318,9 @@ static void midi_process_channel_event(midi_track_state_t* track, uint8_t status
             if (data2 == 0) {
                 LOGT(", note off = %u\n", data1);
                 stop_midi_note(midi_ch, data1);
+            } else if (midi_ch == 9) {
+                LOGT(", note on = %u, velocity = %u\n", data1, data2);
+                play_midi_drum(data1, data2);
             } else {
                 LOGT(", note on = %u, velocity = %u\n", data1, data2);
                 play_midi_note(midi_ch, data1, data2);
