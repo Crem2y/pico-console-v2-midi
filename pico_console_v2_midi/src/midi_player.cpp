@@ -1,296 +1,545 @@
 // headers
+#include <stdint.h>
 #include "common.h"
 #include "v2_midi.hpp"
 
 extern audioSystem Audio;
 
-uint16_t read_be16(const uint8_t *p) {
+#define MIDI_CHANNEL_COUNT 16
+#define MIDI_VOICE_COUNT 64
+#define MIDI_MAX_TRACKS 32
+
+typedef struct {
+    uint8_t program;
+    uint8_t volume;
+    uint8_t expression;
+    uint8_t pan;
+    uint16_t pitch_bend;
+} midi_channel_state_t;
+
+typedef struct {
+    bool active;
+    uint8_t midi_ch;
+    uint8_t note;
+    uint32_t age;
+} midi_voice_state_t;
+
+typedef struct {
+    const uint8_t* data;
+    size_t length;
+    size_t pos;
+    uint8_t running_status;
+    uint32_t next_tick;
+    bool ended;
+} midi_track_state_t;
+
+static midi_channel_state_t midi_channels[MIDI_CHANNEL_COUNT];
+static midi_voice_state_t midi_voices[MIDI_VOICE_COUNT];
+
+static uint32_t midi_voice_age = 0;
+
+static uint16_t read_be16(const uint8_t* p) {
     return ((uint16_t)p[0] << 8) | p[1];
 }
 
-uint32_t read_be32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+static uint32_t read_be32(const uint8_t* p) {
+    return ((uint32_t)p[0] << 24) |
+           ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) |
+           p[3];
 }
 
 static bool read_vlq(const uint8_t* data, size_t length, size_t* pos, uint32_t* value) {
-  uint32_t result = 0;
+    uint32_t result = 0;
 
-  for (int i = 0; i < 4; i++) {
-    if (*pos >= length) {
-      return false;
+    for (int i = 0; i < 4; i++) {
+        if (*pos >= length) {
+            return false;
+        }
+
+        uint8_t b = data[(*pos)++];
+        result = (result << 7) | (b & 0x7F);
+
+        if (!(b & 0x80)) {
+            *value = result;
+            return true;
+        }
     }
 
-    uint8_t b = data[(*pos)++];
-    result = (result << 7) | (b & 0x7F);
-
-    if (!(b & 0x80)) {
-      *value = result;
-      return true;
-    }
-  }
-
-  return false;
+    return false;
 }
 
-int8_t midi_channel_note[64];
+static void midi_reset_state(void) {
+    midi_voice_age = 0;
 
-void play_midi_note(uint8_t note) {
-  static uint8_t steal_ch = 0;
-
-  // fine same note
-  for (uint8_t ch = 0; ch < 64; ch++) {
-    if (midi_channel_note[ch] == note) {
-      Audio.play_note_num(ch, note, 32);
-      return;
+    for (uint8_t ch = 0; ch < MIDI_CHANNEL_COUNT; ch++) {
+        midi_channels[ch].program = 0;
+        midi_channels[ch].volume = 127;
+        midi_channels[ch].expression = 127;
+        midi_channels[ch].pan = 64;
+        midi_channels[ch].pitch_bend = 8192;
     }
-  }
 
-  // find empty channel
-  for (uint8_t ch = 0; ch < 64; ch++) {
-    if (midi_channel_note[ch] == -1) {
-      midi_channel_note[ch] = note;
-      Audio.play_note_num(ch, note, 32);
-      return;
+    for (uint8_t voice = 0; voice < MIDI_VOICE_COUNT; voice++) {
+        midi_voices[voice].active = false;
+        midi_voices[voice].midi_ch = 0;
+        midi_voices[voice].note = 0;
+        midi_voices[voice].age = 0;
     }
-  }
-
-  // if there is no empty channel, steal the channel
-  //Audio.stop_note(steal_ch);
-
-  midi_channel_note[steal_ch] = note;
-  Audio.play_note_num(steal_ch, note, 32);
-
-  steal_ch++;
-  if (steal_ch >= 64) {
-    steal_ch = 0;
-  }
 }
 
-void stop_midi_note(uint8_t note) {
-  for (uint8_t ch = 0; ch < 64; ch++) {
-    if (midi_channel_note[ch] == note) {
-      Audio.stop_note(ch);
-      midi_channel_note[ch] = -1;
-      return;
-    }
-  }
+static wave_t midi_program_to_wave(uint8_t program) {
+    (void)program;
+
+    return WAVE_SQUARE_50;
 }
 
-void play_midi(const uint8_t* m) {
-  //test
-  uartLog_set_level(LOG_TRACE);
+static void midi_apply_pan(uint8_t voice, uint8_t pan) {
+    uint8_t left;
+    uint8_t right;
 
-  //test
-  for(int i=0; i<64; i++) {
-    midi_channel_note[i] = -1;
-  }
-
-  // manual channel setting
-  for(int i=0; i<64; i++) {
-    Audio.set_vol_env(i, 25000, 1);
-    Audio.set_mix(i, 255, 255);
-    Audio.set_wave(i, WAVE_SQUARE_50);
-    sleep_ms(1);
-  }
-
-  // check "MThd"
-  if(m[0] != 0x4D ||
-    m[1] != 0x54 ||
-    m[2] != 0x68 ||
-    m[3] != 0x64) {
-    LOGE("Not a midi file");
-    return;
-  }
-  m += 4;
-
-  // midi header (big endian)
-  uint32_t midi_header_length = read_be32(m);
-  m += 4;
-  const uint8_t* next_midi_track = m + midi_header_length;
-  uint16_t midi_format = read_be16(m);
-  m += 2;
-  uint16_t midi_tracks = read_be16(m);
-  m += 2;
-  uint16_t midi_division = read_be16(m);
-
-  LOGI("header_length = %d\n", midi_header_length);
-  LOGI("format = %d\n", midi_format);
-  LOGI("tracks = %d\n", midi_tracks);
-  LOGI("division = %d\n", midi_division);
-
-  uint32_t tempo_us = 500000; // 120 BPM
-
-  for (size_t i = 0; i < midi_tracks; i++) {
-    const uint8_t* midi_track = next_midi_track;
-
-    LOGI("--track %u--\n", i);
-
-    // check "MTrk"
-    if (midi_track[0] != 0x4D ||
-      midi_track[1] != 0x54 ||
-      midi_track[2] != 0x72 ||
-      midi_track[3] != 0x6B) {
-      LOGE("Wrong midi track %02X%02X%02X%02X", midi_track[0], midi_track[1], midi_track[2], midi_track[3]);
-      return;
+    if (pan <= 64) {
+        left = 255;
+        right = (uint16_t)pan * 255 / 64;
+    } else {
+        left = (uint16_t)(127 - pan) * 255 / 63;
+        right = 255;
     }
 
-    midi_track += 4;
+    Audio.set_mix(voice, left, right);
+}
 
-    uint32_t midi_track_length = read_be32(midi_track);
-    midi_track += 4;
+static uint8_t midi_calculate_volume(uint8_t midi_ch, uint8_t velocity) {
+    uint32_t volume = (uint32_t)velocity *
+                      midi_channels[midi_ch].volume *
+                      midi_channels[midi_ch].expression;
 
-    next_midi_track = midi_track + midi_track_length;
+    return volume * 32 / (127 * 127 * 127);
+}
 
-    LOGI("track_length = %u\n\n", midi_track_length);
-    
-    size_t pos = 0;
-    uint8_t running_status = 0;
-    uint8_t now_ch = 0; //test
-
-    while (pos < midi_track_length) {
-      uint32_t track_delta;
-
-      if (!read_vlq( midi_track, midi_track_length, &pos, &track_delta)) {
-        LOGW("Wrong delta\n");
-        break;
-      }
-
-      if (pos >= midi_track_length) {
-        break;
-      }
-
-      uint8_t status;
-
-      if (midi_track[pos] & 0x80) {
-        status = midi_track[pos++];
-
-        if (status < 0xF0) {
-          running_status = status;
+static uint8_t midi_allocate_voice(void) {
+    for (uint8_t voice = 0; voice < MIDI_VOICE_COUNT; voice++) {
+        if (!midi_voices[voice].active) {
+            return voice;
         }
-      } else {
-        // Running Status
-        if (running_status == 0) {
-          LOGW("Wrong running status\n");
-          break;
+    }
+
+    uint8_t oldest_voice = 0;
+    uint32_t oldest_age = midi_voices[0].age;
+
+    for (uint8_t voice = 1; voice < MIDI_VOICE_COUNT; voice++) {
+        if (midi_voices[voice].age < oldest_age) {
+            oldest_voice = voice;
+            oldest_age = midi_voices[voice].age;
         }
+    }
 
-        status = running_status;
-      }
+    return oldest_voice;
+}
 
-      // Channel midi event
-      if (status < 0xF0) {
-        uint8_t cmd = status & 0xF0;
-        uint8_t ch = status & 0x0F;
+static void play_midi_note(uint8_t midi_ch, uint8_t note, uint8_t velocity) {
+    if (midi_ch >= MIDI_CHANNEL_COUNT || note >= 128 || velocity == 0) {
+        return;
+    }
 
-        uint8_t data_length =
-            (cmd == 0xC0 || cmd == 0xD0) ? 1 : 2;
+    uint8_t voice = midi_allocate_voice();
 
-        if (pos + data_length > midi_track_length) {
-          break;
+    if (midi_voices[voice].active) {
+        Audio.stop_note(voice);
+    }
+
+    Audio.set_wave(voice, midi_program_to_wave(midi_channels[midi_ch].program));
+    midi_apply_pan(voice, midi_channels[midi_ch].pan);
+    Audio.play_note_num(voice, note, midi_calculate_volume(midi_ch, velocity));
+
+    midi_voices[voice].active = true;
+    midi_voices[voice].midi_ch = midi_ch;
+    midi_voices[voice].note = note;
+    midi_voices[voice].age = midi_voice_age++;
+}
+
+static void stop_midi_note(uint8_t midi_ch, uint8_t note) {
+    for (uint8_t voice = 0; voice < MIDI_VOICE_COUNT; voice++) {
+        if (midi_voices[voice].active &&
+            midi_voices[voice].midi_ch == midi_ch &&
+            midi_voices[voice].note == note) {
+
+            Audio.stop_note(voice);
+            midi_voices[voice].active = false;
+            return;
         }
+    }
+}
 
-        uint8_t data1 = midi_track[pos++];
-        uint8_t data2 = 0;
-
-        if (data_length == 2) {
-          data2 = midi_track[pos++];
+static void stop_midi_channel(uint8_t midi_ch) {
+    for (uint8_t voice = 0; voice < MIDI_VOICE_COUNT; voice++) {
+        if (midi_voices[voice].active && midi_voices[voice].midi_ch == midi_ch) {
+            Audio.stop_note(voice);
+            midi_voices[voice].active = false;
         }
+    }
+}
 
-        LOGT("delta = %u, cmd = 0x%02X, ch = %u", track_delta, cmd, ch);
-
-        // test
-        uint32_t delay_us = (uint64_t)track_delta * tempo_us / midi_division;
-        if (delay_us > 0) {
-          sleep_us(delay_us);
+static void stop_all_midi_notes(void) {
+    for (uint8_t voice = 0; voice < MIDI_VOICE_COUNT; voice++) {
+        if (midi_voices[voice].active) {
+            Audio.stop_note(voice);
+            midi_voices[voice].active = false;
         }
+    }
+}
 
-        switch (cmd) {
-          case 0x80:
+static void midi_update_channel_pan(uint8_t midi_ch) {
+    for (uint8_t voice = 0; voice < MIDI_VOICE_COUNT; voice++) {
+        if (midi_voices[voice].active && midi_voices[voice].midi_ch == midi_ch) {
+            midi_apply_pan(voice, midi_channels[midi_ch].pan);
+        }
+    }
+}
+
+static bool midi_track_read_next_delta(midi_track_state_t* track) {
+    if (track->ended || track->pos >= track->length) {
+        track->ended = true;
+        return false;
+    }
+
+    uint32_t delta;
+
+    if (!read_vlq(track->data, track->length, &track->pos, &delta)) {
+        track->ended = true;
+        return false;
+    }
+
+    track->next_tick += delta;
+    return true;
+}
+
+static void midi_process_channel_event(midi_track_state_t* track, uint8_t status) {
+    uint8_t cmd = status & 0xF0;
+    uint8_t midi_ch = status & 0x0F;
+    uint8_t data_length = (cmd == 0xC0 || cmd == 0xD0) ? 1 : 2;
+
+    if (track->pos + data_length > track->length) {
+        track->ended = true;
+        return;
+    }
+
+    uint8_t data1 = track->data[track->pos++];
+    uint8_t data2 = 0;
+
+    if (data_length == 2) {
+        data2 = track->data[track->pos++];
+    }
+
+    LOGT("cmd = 0x%02X, ch = %u", cmd, midi_ch);
+
+    switch (cmd) {
+        case 0x80:
             LOGT(", note off = %u, velocity = %u\n", data1, data2);
-            stop_midi_note(data1);
+            stop_midi_note(midi_ch, data1);
             break;
 
-          case 0x90:
+        case 0x90:
             if (data2 == 0) {
-              LOGT(", note off = %u\n", data1);
-              stop_midi_note(data1);
+                LOGT(", note off = %u\n", data1);
+                stop_midi_note(midi_ch, data1);
             } else {
-              LOGT(", note on = %u, velocity = %u\n", data1, data2);
-              play_midi_note(data1);
-              now_ch++;
-              if(now_ch >= 64) now_ch = 0;
+                LOGT(", note on = %u, velocity = %u\n", data1, data2);
+                play_midi_note(midi_ch, data1, data2);
             }
             break;
 
-          case 0xC0:
-            LOGT(", program = %u\n", data1);
+        case 0xA0:
+            LOGT(", poly pressure note = %u, pressure = %u\n", data1, data2);
             break;
 
-          default:
+        case 0xB0:
+            LOGT(", control = %u, value = %u\n", data1, data2);
+
+            switch (data1) {
+                case 7:
+                    midi_channels[midi_ch].volume = data2;
+                    break;
+
+                case 10:
+                    midi_channels[midi_ch].pan = data2;
+                    midi_update_channel_pan(midi_ch);
+                    break;
+
+                case 11:
+                    midi_channels[midi_ch].expression = data2;
+                    break;
+
+                case 120:
+                case 123:
+                    stop_midi_channel(midi_ch);
+                    break;
+
+                case 121:
+                    midi_channels[midi_ch].volume = 127;
+                    midi_channels[midi_ch].expression = 127;
+                    midi_channels[midi_ch].pan = 64;
+                    midi_channels[midi_ch].pitch_bend = 8192;
+                    midi_update_channel_pan(midi_ch);
+                    break;
+
+                default:
+                    break;
+            }
+            break;
+
+        case 0xC0:
+            LOGT(", program = %u\n", data1);
+            midi_channels[midi_ch].program = data1;
+            break;
+
+        case 0xD0:
+            LOGT(", channel pressure = %u\n", data1);
+            break;
+
+        case 0xE0:
+            midi_channels[midi_ch].pitch_bend = ((uint16_t)data2 << 7) | data1;
+            LOGT(", pitch bend = %u\n", midi_channels[midi_ch].pitch_bend);
+            break;
+
+        default:
             LOGT(", data1 = %u, data2 = %u\n", data1, data2);
             break;
-        }
-
-        continue;
-      }
-
-      // Meta Event
-      if (status == 0xFF) {
-        running_status = 0;
-
-        if (pos >= midi_track_length) {
-          break;
-        }
-
-        uint8_t meta_type = midi_track[pos++];
-
-        uint32_t meta_length;
-
-        if (!read_vlq(midi_track, midi_track_length, &pos, &meta_length)) {
-          break;
-        }
-
-        if (pos + meta_length > midi_track_length) {
-          break;
-        }
-
-        if (meta_type == 0x51 && meta_length == 3) {
-          tempo_us = ((uint32_t)midi_track[pos] << 16) | ((uint32_t)midi_track[pos + 1] << 8) | midi_track[pos + 2];
-
-          LOGT("delta = %u, tempo = %u us, bpm = %u\n", track_delta, tempo_us, 60000000 / tempo_us);
-        } else if (meta_type == 0x2F) {
-          LOGT("delta = %u, end of track\n", track_delta);
-          break;
-        } else {
-          LOGT("delta = %u, meta = 0x%02X, length = %u\n", track_delta, meta_type, meta_length);
-        }
-
-        pos += meta_length;
-        continue;
-      }
-
-      // SysEx
-      if (status == 0xF0 || status == 0xF7) {
-        running_status = 0;
-
-        uint32_t sysex_length;
-
-        if (!read_vlq(midi_track, midi_track_length, &pos, &sysex_length)) {
-          break;
-        }
-
-        if (pos + sysex_length > midi_track_length) {
-          break;
-        }
-
-        LOGT("delta = %u, sysex length = %u\n", track_delta, sysex_length);
-
-        pos += sysex_length;
-        continue;
-      }
-
-      LOGW("Unknown status: 0x%02X\n", status);
-      break;
     }
-  }
+}
+
+static void midi_process_meta_event(midi_track_state_t* track, uint32_t* tempo_us) {
+    track->running_status = 0;
+
+    if (track->pos >= track->length) {
+        track->ended = true;
+        return;
+    }
+
+    uint8_t meta_type = track->data[track->pos++];
+    uint32_t meta_length;
+
+    if (!read_vlq(track->data, track->length, &track->pos, &meta_length)) {
+        track->ended = true;
+        return;
+    }
+
+    if (track->pos + meta_length > track->length) {
+        track->ended = true;
+        return;
+    }
+
+    if (meta_type == 0x51 && meta_length == 3) {
+        uint32_t new_tempo = ((uint32_t)track->data[track->pos] << 16) |
+                             ((uint32_t)track->data[track->pos + 1] << 8) |
+                             track->data[track->pos + 2];
+
+        if (new_tempo != 0) {
+            *tempo_us = new_tempo;
+            LOGT("tempo = %u us, bpm = %u\n", *tempo_us, 60000000 / *tempo_us);
+        }
+    } else if (meta_type == 0x2F) {
+        LOGT("end of track\n");
+        track->pos += meta_length;
+        track->ended = true;
+        return;
+    } else {
+        LOGT("meta = 0x%02X, length = %u\n", meta_type, meta_length);
+    }
+
+    track->pos += meta_length;
+}
+
+static void midi_process_sysex_event(midi_track_state_t* track) {
+    track->running_status = 0;
+
+    uint32_t sysex_length;
+
+    if (!read_vlq(track->data, track->length, &track->pos, &sysex_length)) {
+        track->ended = true;
+        return;
+    }
+
+    if (track->pos + sysex_length > track->length) {
+        track->ended = true;
+        return;
+    }
+
+    LOGT("sysex length = %u\n", sysex_length);
+
+    track->pos += sysex_length;
+}
+
+static void midi_process_track_event(midi_track_state_t* track, uint32_t* tempo_us) {
+    if (track->ended || track->pos >= track->length) {
+        track->ended = true;
+        return;
+    }
+
+    uint8_t status;
+
+    if (track->data[track->pos] & 0x80) {
+        status = track->data[track->pos++];
+
+        if (status < 0xF0) {
+            track->running_status = status;
+        }
+    } else {
+        if (track->running_status == 0) {
+            LOGW("Wrong running status\n");
+            track->ended = true;
+            return;
+        }
+
+        status = track->running_status;
+    }
+
+    if (status < 0xF0) {
+        midi_process_channel_event(track, status);
+    } else if (status == 0xFF) {
+        midi_process_meta_event(track, tempo_us);
+    } else if (status == 0xF0 || status == 0xF7) {
+        midi_process_sysex_event(track);
+    } else {
+        LOGW("Unknown status: 0x%02X\n", status);
+        track->ended = true;
+    }
+
+    if (!track->ended && !midi_track_read_next_delta(track)) {
+        track->ended = true;
+    }
+}
+
+void play_midi(const uint8_t* m) {
+    uartLog_set_level(LOG_TRACE);
+
+    midi_reset_state();
+
+    for (uint8_t voice = 0; voice < MIDI_VOICE_COUNT; voice++) {
+        Audio.set_vol_env(voice, 25000, 1);
+        Audio.set_mix(voice, 255, 255);
+        Audio.set_wave(voice, WAVE_SQUARE_50);
+        sleep_ms(1);
+    }
+
+    if (m[0] != 'M' || m[1] != 'T' || m[2] != 'h' || m[3] != 'd') {
+        LOGE("Not a midi file\n");
+        return;
+    }
+
+    m += 4;
+
+    uint32_t midi_header_length = read_be32(m);
+    m += 4;
+
+    if (midi_header_length < 6) {
+        LOGE("Wrong MIDI header length: %u\n", midi_header_length);
+        return;
+    }
+
+    const uint8_t* midi_header = m;
+
+    uint16_t midi_format = read_be16(midi_header);
+    uint16_t midi_track_count = read_be16(midi_header + 2);
+    uint16_t midi_division = read_be16(midi_header + 4);
+
+    const uint8_t* next_midi_track = midi_header + midi_header_length;
+
+    LOGI("header_length = %u\n", midi_header_length);
+    LOGI("format = %u\n", midi_format);
+    LOGI("tracks = %u\n", midi_track_count);
+    LOGI("division = %u\n", midi_division);
+
+    if (midi_format > 1) {
+        LOGE("Unsupported MIDI format: %u\n", midi_format);
+        return;
+    }
+
+    if (midi_format == 0 && midi_track_count != 1) {
+        LOGW("Format 0 MIDI has %u tracks\n", midi_track_count);
+    }
+
+    if (midi_track_count == 0 || midi_track_count > MIDI_MAX_TRACKS) {
+        LOGE("Unsupported MIDI track count: %u\n", midi_track_count);
+        return;
+    }
+
+    if (midi_division == 0) {
+        LOGE("Wrong MIDI division\n");
+        return;
+    }
+
+    if (midi_division & 0x8000) {
+        LOGE("SMPTE MIDI division is not supported\n");
+        return;
+    }
+
+    midi_track_state_t tracks[MIDI_MAX_TRACKS] = {};
+
+    for (uint16_t i = 0; i < midi_track_count; i++) {
+        const uint8_t* midi_track = next_midi_track;
+
+        if (midi_track[0] != 'M' || midi_track[1] != 'T' || midi_track[2] != 'r' || midi_track[3] != 'k') {
+            LOGE("Wrong MIDI track %02X%02X%02X%02X\n", midi_track[0], midi_track[1], midi_track[2], midi_track[3]);
+            return;
+        }
+
+        uint32_t midi_track_length = read_be32(midi_track + 4);
+
+        tracks[i].data = midi_track + 8;
+        tracks[i].length = midi_track_length;
+        tracks[i].pos = 0;
+        tracks[i].running_status = 0;
+        tracks[i].next_tick = 0;
+        tracks[i].ended = false;
+
+        next_midi_track = tracks[i].data + midi_track_length;
+
+        if (!midi_track_read_next_delta(&tracks[i])) {
+            tracks[i].ended = true;
+        }
+
+        LOGI("track %u length = %u\n", i, midi_track_length);
+    }
+
+    uint32_t tempo_us = 500000;
+    uint32_t current_tick = 0;
+
+    while (true) {
+        uint32_t next_tick = UINT32_MAX;
+        bool has_active_track = false;
+
+        for (uint16_t i = 0; i < midi_track_count; i++) {
+            if (!tracks[i].ended) {
+                has_active_track = true;
+
+                if (tracks[i].next_tick < next_tick) {
+                    next_tick = tracks[i].next_tick;
+                }
+            }
+        }
+
+        if (!has_active_track) {
+            break;
+        }
+
+        if (next_tick > current_tick) {
+            uint32_t delta_tick = next_tick - current_tick;
+            uint64_t delay_us = (uint64_t)delta_tick * tempo_us / midi_division;
+
+            if (delay_us > 0) {
+                sleep_us(delay_us);
+            }
+
+            current_tick = next_tick;
+        }
+
+        for (uint16_t i = 0; i < midi_track_count; i++) {
+            while (!tracks[i].ended && tracks[i].next_tick == current_tick) {
+                midi_process_track_event(&tracks[i], &tempo_us);
+            }
+        }
+    }
+
+    stop_all_midi_notes();
 }
