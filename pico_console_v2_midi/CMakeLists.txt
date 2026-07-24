@@ -42,7 +42,6 @@ pico_sdk_init()
 add_executable(${PROJECT_NAME}
   src/v2_midi.cpp
   src/hw_config.c
-  src/midi_file.c
 )
 
 add_subdirectory(common)

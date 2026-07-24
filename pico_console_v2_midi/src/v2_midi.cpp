@@ -80,8 +80,8 @@ inline int pio_uart_write_wrapper_rf(const uint8_t* data, size_t data_size) {
 #define MIDI_FILE_SIZE (1 * 1024 * 1024) // 1MB
 unsigned char* midi_file = (unsigned char*)PSRAM_BASE + MIDI_FILE_SIZE;
 
-extern uint8_t midi_file_sample[]; //test
-extern size_t midi_file_sample_size; //test
+void midi_file_selector(void);
+void load_midi(const char *path);
 void play_midi(const uint8_t* midi_file);
 
 int main() { // uses core 0 to sub core
@@ -311,11 +311,217 @@ void core1_entry() { // uses core 1 to main core
   Graphic.setTextColor(LCD_WHITE, LCD_BLACK);
 
   while (1) {
-    memcpy(midi_file, midi_file_sample, midi_file_sample_size);
+    midi_file_selector();
     play_midi(midi_file);
+  }
+}
 
-    while(!Gamepad.is_btn_pressed(BTN_START)) {
-      sleep_ms(100);
+void load_midi(const char *path) {
+  FIL fil;
+  FRESULT fr = f_open(&fil, path, FA_READ);
+  if (FR_OK != fr) {
+    Graphic.printf("f_open error: %s (%d)\n", FRESULT_str(fr), fr);
+    return;
+  }
+
+  uint8_t buf[256];
+  UINT bytes_read;
+  size_t pos = 0;
+
+  while (1) {
+    fr = f_read(&fil, buf, sizeof buf, &bytes_read);
+    if (FR_OK != fr) {
+      Graphic.printf("f_read error: %s (%d)\n", FRESULT_str(fr), fr);
+      break;
+    }
+
+    if (bytes_read == 0) {
+      break;
+    }
+
+    memcpy(&midi_file[pos], buf, bytes_read);
+    pos += bytes_read;
+    if(pos > MIDI_FILE_SIZE) {
+      break;
+    }
+  }
+
+  fr = f_close(&fil);
+  if (FR_OK != fr) {
+    Graphic.printf("f_close error: %s (%d)\n", FRESULT_str(fr), fr);
+  }
+}
+
+void ls_cursor(const char *dir, int cursor, char* cursor_path, uint8_t* cursor_type) {
+    char cwdbuf[FF_LFN_BUF] = {0};
+    FRESULT fr; /* Return value */
+    char const *p_dir;
+    if (dir[0]) {
+        p_dir = dir;
+    } else {
+        fr = f_getcwd(cwdbuf, sizeof cwdbuf);
+        if (FR_OK != fr) {
+            Graphic.printf("f_getcwd error: %s (%d)\n", FRESULT_str(fr), fr);
+            return;
+        }
+        p_dir = cwdbuf;
+    }
+    LOGI("Directory Listing: %s\n", p_dir);
+    DIR dj = {};      /* Directory object */
+    FILINFO fno = {}; /* File information */
+    assert(p_dir);
+    fr = f_findfirst(&dj, &fno, p_dir, "*.mid");
+    if (FR_OK != fr) {
+        Graphic.printf("f_findfirst error: %s (%d)\n", FRESULT_str(fr), fr);
+        return;
+    }
+
+    int count = 0;
+    uint8_t type = 0;
+    *cursor_type = type;
+
+    while (fr == FR_OK && fno.fname[0]) { /* Repeat while an item is found */
+        /* Create a string that includes the file name, the file size and the
+         attributes string. */
+        const char *pcWritableFile = "writable file",
+                   *pcReadOnlyFile = "read only file",
+                   *pcDirectory = "directory";
+        const char *pcAttrib;
+        /* Point pcAttrib to a string that describes the file. */
+        if (fno.fattrib & AM_DIR) {
+            pcAttrib = pcDirectory;
+            type = 1;
+        } else if (fno.fattrib & AM_RDO) {
+            pcAttrib = pcReadOnlyFile;
+            type = 2;
+        } else {
+            pcAttrib = pcWritableFile;
+            type = 3;
+        }
+        /* Create a string that includes the file name, the file size and the
+         attributes string. */
+        if(count == cursor) {
+          strncpy(cursor_path, fno.fname, 512);
+          Graphic.set_text_color(LCD_BLACK, LCD_WHITE);
+          *cursor_type = type;
+        } else {
+          Graphic.set_text_color(LCD_WHITE, LCD_BLACK);
+        }
+        // Graphic.printf("%s [%s] [size=%llu]\n", fno.fname, pcAttrib, fno.fsize);
+        Graphic.printf("%s [%s]\n", fno.fname, pcAttrib);
+
+        fr = f_findnext(&dj, &fno); /* Search for next item */
+        count++;
+    }
+    f_closedir(&dj);
+}
+
+void midi_file_selector(void) {
+  Graphic.setTextSize(2);
+  Graphic.setCursor(0,0);
+  Graphic.print("Select MIDI");
+
+  Graphic.setCursor(0,16);
+  Graphic.print("Loading...");
+
+  enum sd_status status = SD_NO_CARD;
+  enum sd_status prev_status = SD_CARD_ERR;
+
+  bool need_display_update = true;
+
+  char path[512] = "";
+  char cursor_path[512] = "";
+  uint8_t cursor = 0;
+  uint8_t cursor_type = 0;
+  bool file_reading = false;
+
+    while(1) {
+    sleep_ms(100);
+
+    status = Sd.get_status();
+    if(prev_status != status) {
+      prev_status = status;
+      Graphic.setCursor(0,16);
+      Graphic.print("SD card : ");
+      switch(status) {
+        case SD_NO_CARD:
+          Graphic.print("not inserted\n");
+          strcpy(path, "");
+          file_reading = false;
+          cursor = 0;
+          break;
+        case SD_NOT_MOUNTED:
+          Graphic.print("not mounted \n");
+          break;
+        case SD_MOUNTING:
+          Graphic.print("mounting... \n");
+          break;
+        case SD_MOUNTED:
+          Graphic.print("mounted     \n");
+          break;
+        case SD_CARD_ERR:
+          Graphic.print("ERROR!!     \n");
+          break;
+        default:
+          break;
+      }
+      need_display_update = true;
+    }
+
+    if(need_display_update) {
+      need_display_update = false;
+      Graphic.fillRect(0,16*2,480,(320-32),LCD_BLACK);
+      Graphic.setCursor(0,16*3);
+      if(status == SD_MOUNTED) {
+        Graphic.set_font(G_FONT_16);
+        FRESULT fr = f_getcwd(path, 512);
+        if (FR_OK == fr) {
+          if(file_reading) {
+            memset(midi_file, 0x00, MIDI_FILE_SIZE);
+
+            Graphic.printf("Loading MIDI '%s'...", cursor_path);
+            load_midi(cursor_path);
+            Graphic.print("ok\n");
+            Graphic.set_font(G_FONT_5X8);
+            return;
+          } else {
+            Graphic.printf("list of '%s'\n", path);
+            ls_cursor(path, cursor, cursor_path, &cursor_type);
+          }
+        }
+        Graphic.set_font(G_FONT_5X8);
+        Graphic.set_text_color(LCD_WHITE, LCD_BLACK);
+      }
+    }
+
+    if(Gamepad.is_btn_pressed(BTN_A)) {
+      if(cursor_type) {
+        if(cursor_type == 1) { // directory
+          f_chdir(cursor_path);
+          cursor = 0;
+        } else { // file
+          file_reading = true;
+        }
+        need_display_update = true;
+      }
+    }
+    if(Gamepad.is_btn_pressed(BTN_B)) {
+      if(file_reading) {
+        file_reading = false;
+      } else {
+        f_chdir("..");
+        cursor = 0;
+      }
+      need_display_update = true;
+    }
+
+    if(Gamepad.is_btn_pressed(BTN_S1_UP) || Gamepad.is_btn_pressed(BTN_UP)) {
+      if(cursor > 0) cursor--;
+      need_display_update = true;
+    }
+    if(Gamepad.is_btn_pressed(BTN_S1_DOWN) || Gamepad.is_btn_pressed(BTN_DOWN)) {
+      if(cursor < 128) cursor++;
+      need_display_update = true;
     }
   }
 }
