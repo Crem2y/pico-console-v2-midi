@@ -44,3 +44,5 @@
 void setup_midi(const uint8_t* midi_file);
 void play_midi(void);
 void stop_midi(void);
+uint32_t get_midi_length_ms(void);
+uint32_t get_midi_current_time_ms(void);

@@ -320,7 +320,11 @@ void core1_entry() { // uses core 1 to main core
     Graphic.printf("Now playing : %s", midi_file_name);
 
     setup_midi(midi_file);
+    uint32_t midi_length = get_midi_length_ms();
+    Graphic.setCursor(0,16);
+    Graphic.printf("00:00 / %02d:%02d", midi_length / (1000 * 60), (midi_length / 1000) % 60);
 
+    time_ms_t time_check_timer;
     time_ms_t btn_check_timer;
     uint8_t volume = 125;
     Audio.set_master_config(volume);
@@ -332,19 +336,26 @@ void core1_entry() { // uses core 1 to main core
 
       time_ms_t now_time = get_system_time_ms();
 
+      if(system_time_elapsed_ms(now_time, time_check_timer) > 1000) {
+        time_check_timer = now_time;
+        uint32_t midi_time = get_midi_current_time_ms();
+        Graphic.setCursor(0,16);
+        Graphic.printf("%02d:%02d", midi_time / (1000 * 60), (midi_time / 1000) % 60);
+      }
+
       if(system_time_elapsed_ms(now_time, btn_check_timer) > 100) {
         btn_check_timer = now_time;
         // set volume
         if(Gamepad.is_btn_pressed(BTN_SL)) {
           if(volume > 5) volume -= 5;
           Audio.set_master_config(volume);
-          Graphic.setCursor(0,16);
+          Graphic.setCursor(0,16*2);
           Graphic.printf("volume : %2d ", volume);
         }
         if(Gamepad.is_btn_pressed(BTN_SR)) {
           if(volume < 255) volume += 5;
           Audio.set_master_config(volume);
-          Graphic.setCursor(0,16);
+          Graphic.setCursor(0,16*2);
           Graphic.printf("volume : %2d ", volume);
         }
 
