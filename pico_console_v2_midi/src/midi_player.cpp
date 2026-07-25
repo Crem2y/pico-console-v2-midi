@@ -38,6 +38,19 @@ static midi_voice_state_t midi_voices[MIDI_VOICE_COUNT];
 
 static uint32_t midi_voice_age = 0;
 
+static uint16_t midi_format;
+static uint16_t midi_track_count;
+static uint16_t midi_division;
+static midi_track_state_t tracks[MIDI_MAX_TRACKS] = {};
+static uint32_t tempo_us = 500000;
+static uint32_t current_tick = 0;
+
+static time_us_t midi_wait_start_us = 0;
+static uint64_t midi_wait_duration_us = 0;
+static bool midi_waiting = false;
+
+uint8_t play_status = 0;
+
 static uint16_t read_be16(const uint8_t* p) {
     return ((uint16_t)p[0] << 8) | p[1];
 }
@@ -131,7 +144,7 @@ static uint8_t midi_calculate_volume(uint8_t midi_ch, uint8_t velocity) {
                       midi_channels[midi_ch].volume *
                       midi_channels[midi_ch].expression;
 
-    return volume * 31 / (127 * 127 * 127);
+    return volume * 127 / (127 * 127 * 127);
 }
 
 static uint8_t midi_allocate_voice(void) {
@@ -488,7 +501,7 @@ static void midi_process_track_event(midi_track_state_t* track, uint32_t* tempo_
     }
 }
 
-void play_midi(const uint8_t* m) {
+void setup_midi(const uint8_t* m) {
     uartLog_set_level(LOG_TRACE);
 
     midi_reset_state();
@@ -517,9 +530,9 @@ void play_midi(const uint8_t* m) {
 
     const uint8_t* midi_header = m;
 
-    uint16_t midi_format = read_be16(midi_header);
-    uint16_t midi_track_count = read_be16(midi_header + 2);
-    uint16_t midi_division = read_be16(midi_header + 4);
+    midi_format = read_be16(midi_header);
+    midi_track_count = read_be16(midi_header + 2);
+    midi_division = read_be16(midi_header + 4);
 
     const uint8_t* next_midi_track = midi_header + midi_header_length;
 
@@ -552,8 +565,6 @@ void play_midi(const uint8_t* m) {
         return;
     }
 
-    midi_track_state_t tracks[MIDI_MAX_TRACKS] = {};
-
     for (uint16_t i = 0; i < midi_track_count; i++) {
         const uint8_t* midi_track = next_midi_track;
 
@@ -580,10 +591,22 @@ void play_midi(const uint8_t* m) {
         LOGI("track %u length = %u\n", i, midi_track_length);
     }
 
-    uint32_t tempo_us = 500000;
-    uint32_t current_tick = 0;
+    midi_wait_start_us = get_system_time_us();
+    midi_wait_duration_us = 0;
+    midi_waiting = false;
+    tempo_us = 500000;
+    current_tick = 0;
+    play_status = 1;
+}
 
-    while (true) {
+void play_midi(void) {
+    if (!play_status) {
+        return;
+    }
+
+    uint16_t processed_tick_count = 0;
+
+    while (processed_tick_count < 32) {
         uint32_t next_tick = UINT32_MAX;
         bool has_active_track = false;
 
@@ -598,26 +621,40 @@ void play_midi(const uint8_t* m) {
         }
 
         if (!has_active_track) {
-            break;
+            stop_all_midi_notes();
+            midi_waiting = false;
+            play_status = 0;
+            return;
         }
 
-        if (next_tick > current_tick) {
+        if (!midi_waiting) {
             uint32_t delta_tick = next_tick - current_tick;
-            uint64_t delay_us = (uint64_t)delta_tick * tempo_us / midi_division;
 
-            if (delay_us > 0) {
-                sleep_us(delay_us);
-            }
-
-            current_tick = next_tick;
+            midi_wait_duration_us = (uint64_t)delta_tick * tempo_us / midi_division;
+            midi_waiting = true;
         }
+
+        time_us_t now = get_system_time_us();
+
+        if ((uint64_t)system_time_elapsed_us(now, midi_wait_start_us) < midi_wait_duration_us) {
+            return;
+        }
+
+        midi_wait_start_us += (time_us_t)midi_wait_duration_us;
+        midi_wait_duration_us = 0;
+        midi_waiting = false;
+        current_tick = next_tick;
 
         for (uint16_t i = 0; i < midi_track_count; i++) {
             while (!tracks[i].ended && tracks[i].next_tick == current_tick) {
                 midi_process_track_event(&tracks[i], &tempo_us);
             }
         }
-    }
 
+        processed_tick_count++;
+    }
+}
+
+void stop_midi(void) {
     stop_all_midi_notes();
 }

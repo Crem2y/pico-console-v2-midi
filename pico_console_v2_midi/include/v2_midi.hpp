@@ -41,4 +41,6 @@
 #include "imu.hpp"
 #include "ir_link.hpp"
 
-void play_midi(const uint8_t* midi_file);
+void setup_midi(const uint8_t* midi_file);
+void play_midi(void);
+void stop_midi(void);

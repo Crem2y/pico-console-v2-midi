@@ -81,6 +81,8 @@ inline int pio_uart_write_wrapper_rf(const uint8_t* data, size_t data_size) {
 unsigned char* midi_file = (unsigned char*)PSRAM_BASE + MIDI_FILE_SIZE;
 char midi_file_name[512] = "";
 
+extern uint8_t play_status;
+
 void midi_file_selector(void);
 void load_midi(const char *path);
 
@@ -317,7 +319,55 @@ void core1_entry() { // uses core 1 to main core
     Graphic.setCursor(0,0);
     Graphic.printf("Now playing : %s", midi_file_name);
 
-    play_midi(midi_file);
+    setup_midi(midi_file);
+
+    time_ms_t btn_check_timer;
+    uint8_t volume = 125;
+    Audio.set_master_config(volume);
+
+    while(play_status) {
+      if(play_status == 1) {
+        play_midi();
+      }
+
+      time_ms_t now_time = get_system_time_ms();
+
+      if(system_time_elapsed_ms(now_time, btn_check_timer) > 100) {
+        btn_check_timer = now_time;
+        // set volume
+        if(Gamepad.is_btn_pressed(BTN_SL)) {
+          if(volume > 5) volume -= 5;
+          Audio.set_master_config(volume);
+          Graphic.setCursor(0,16);
+          Graphic.printf("volume : %2d ", volume);
+        }
+        if(Gamepad.is_btn_pressed(BTN_SR)) {
+          if(volume < 255) volume += 5;
+          Audio.set_master_config(volume);
+          Graphic.setCursor(0,16);
+          Graphic.printf("volume : %2d ", volume);
+        }
+
+        // pause & start
+        if(Gamepad.is_btn_pressed(BTN_B)) {
+          stop_midi();
+          play_status = 2;
+          Graphic.setCursor(0,0);
+          Graphic.print("Paused      : ");
+        }
+        if(Gamepad.is_btn_pressed(BTN_A)) {
+          play_status = 1;
+          Graphic.setCursor(0,0);
+          Graphic.print("Now playing : ");
+        }
+
+        // stop
+        if(Gamepad.is_btn_pressed(BTN_SUB2)) {
+          stop_midi();
+          play_status = 0;
+        }
+      }
+    }
   }
 }
 
