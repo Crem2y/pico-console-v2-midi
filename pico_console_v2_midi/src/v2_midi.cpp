@@ -346,13 +346,13 @@ void core1_entry() { // uses core 1 to main core
       if(system_time_elapsed_ms(now_time, btn_check_timer) > 100) {
         btn_check_timer = now_time;
         // set volume
-        if(Gamepad.is_btn_pressed(BTN_SL)) {
+        if(Gamepad.is_btn_pressed(BTN_SL) || Gamepad.is_btn_pressed(BTN_SELECT)) {
           if(volume > 5) volume -= 5;
           Audio.set_master_config(volume);
           Graphic.setCursor(0,16*2);
           Graphic.printf("volume : %2d ", volume);
         }
-        if(Gamepad.is_btn_pressed(BTN_SR)) {
+        if(Gamepad.is_btn_pressed(BTN_SR) || Gamepad.is_btn_pressed(BTN_START)) {
           if(volume < 255) volume += 5;
           Audio.set_master_config(volume);
           Graphic.setCursor(0,16*2);
