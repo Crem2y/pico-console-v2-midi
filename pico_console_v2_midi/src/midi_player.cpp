@@ -102,7 +102,7 @@ static void midi_reset_state(void) {
     }
 }
 
-static wave_t midi_program_to_wave(uint8_t program) {
+static void midi_set_inst(uint8_t voice, uint8_t note_vol, uint8_t program) {
     static const wave_t wave_table[16] = {
         WAVE_TRIANGLE,   // 0~7: Piano
         WAVE_SINE,       // 8~15: Chromatic Percussion
@@ -121,8 +121,11 @@ static wave_t midi_program_to_wave(uint8_t program) {
         WAVE_NOISE,      // 112~119: Percussive
         WAVE_NOISE       // 120~127: Sound Effects
     };
+    wave_t wave = wave_table[program >> 3];
 
-    return wave_table[program >> 3];
+    Audio.set_wave(voice, wave);
+    Audio.set_vol_env(voice, 25000, (note_vol / 32));
+//    Audio.set_pitch_env(voice, 25000, 0, 0);
 }
 
 static void midi_apply_pan(uint8_t voice, uint8_t pan) {
@@ -216,9 +219,12 @@ static void play_midi_drum(uint8_t note, uint8_t velocity) {
         Audio.stop_note(voice);
     }
 
+    uint8_t drum_vol = (velocity / 2);
+
     Audio.set_wave(voice, wave);
-    Audio.set_mix(voice, 255, 255);
-    Audio.play_note_num(voice, play_note, velocity / 2);
+    Audio.set_vol_env(voice, 5000, (drum_vol / 32));
+    // Audio.set_pitch_env(voice, 500, -127, 1);
+    Audio.play_note_num(voice, play_note, drum_vol);
 
     midi_voices[voice].active = true;
     midi_voices[voice].midi_ch = 9;
@@ -237,9 +243,11 @@ static void play_midi_note(uint8_t midi_ch, uint8_t note, uint8_t velocity) {
         Audio.stop_note(voice);
     }
 
-    Audio.set_wave(voice, midi_program_to_wave(midi_channels[midi_ch].program));
+    uint8_t note_vol = midi_calculate_volume(midi_ch, velocity);
+
+    midi_set_inst(voice, note_vol, midi_channels[midi_ch].program);
     midi_apply_pan(voice, midi_channels[midi_ch].pan);
-    Audio.play_note_num(voice, note, midi_calculate_volume(midi_ch, velocity));
+    Audio.play_note_num(voice, note, note_vol);
 
     midi_voices[voice].active = true;
     midi_voices[voice].midi_ch = midi_ch;
@@ -324,7 +332,7 @@ static void midi_process_channel_event(midi_track_state_t* track, uint8_t status
 
     switch (cmd) {
         case 0x80:
-            LOGT(", note off = %u, velocity = %u\n", data1, data2);
+            LOGT(", note off = %u\n", data1);
             stop_midi_note(midi_ch, data1);
             break;
 
@@ -333,7 +341,7 @@ static void midi_process_channel_event(midi_track_state_t* track, uint8_t status
                 LOGT(", note off = %u\n", data1);
                 stop_midi_note(midi_ch, data1);
             } else if (midi_ch == 9) {
-                LOGT(", note on = %u, velocity = %u\n", data1, data2);
+                LOGT(", drum on = %u, velocity = %u\n", data1, data2);
                 play_midi_drum(data1, data2);
             } else {
                 LOGT(", note on = %u, velocity = %u\n", data1, data2);

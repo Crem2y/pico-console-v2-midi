@@ -4,7 +4,7 @@
 #include <string.h>
 #include "bridge_commands.h"
 
-#define BRIDGE_MSG_QUEUE_SIZE 32
+#define BRIDGE_MSG_QUEUE_SIZE 64
 #define PAYLOAD_MAX_SIZE 16
 #define BRIDGE_HEADER 0xAA
 #define BRIDGE_TAIL 0x55
