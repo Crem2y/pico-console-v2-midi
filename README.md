@@ -1,51 +1,39 @@
-# pico-console V2
+# Pico Console V2 MIDI
 
 ![Front view](doc/front.jpg)
 
-[![Build test](https://github.com/Crem2y/pico-console-v2/actions/workflows/build_test.yml/badge.svg)](https://github.com/Crem2y/pico-console-v2/actions/workflows/build_test.yml)
+[![Build test](https://github.com/Crem2y/pico-console-v2-midi/actions/workflows/build_test.yml/badge.svg)](https://github.com/Crem2y/pico-console-v2-midi/actions/workflows/build_test.yml)
 
-A custom-built handheld console platform based on a multi-MCU architecture.
-
-The system is built around two RP2350 microcontrollers:
-one acting as the main processor and the other as a dedicated southbridge.
-
-This project focuses on scalable embedded system design, including multi-processor coordination, custom protocols, and full-stack bare-metal development.
-
-For the previous version of this project, see [pico-console](https://github.com/Crem2y/pico-console).
+This project plays MIDI files using the platform's custom APU without SoundFonts.
+MIDI events are translated into APU commands to approximate instrument sounds through synthesized audio.
 
 ## Features
 
-- Architecture:
-    - Main CPU: RP2350A (at [rp2350a_main_board](https://github.com/Crem2y/rp2350a_main_board))
-    - Southbridge: RP2350B (at [pico-console-v2-pcb](https://github.com/Crem2y/pico-console-v2-pcb). handles input, peripherals, and auxiliary I/O)
-    - Custom inter-MCU communication (based on UART)
+- MIDI file loading from microSD
+- PSRAM-backed MIDI file storage
+- MIDI playback without SoundFonts
+- Instrument sound approximation using the custom APU
+- Playback, pause, and resume controls
+- Volume control
+- Built-in MIDI file browser
 
-- Graphics:
-    - 480x320 18-bit LCD (50MHz SPI protocol over HSTX)
+## Implementation
 
-- Audio:
-    - Software mixing pipeline (multi-channel)
+- **Platform**: Pico Console V2
+- **File loading**: MIDI files loaded from microSD into external PSRAM
+- **MIDI processing**: MIDI events translated into APU commands
+- **Sound generation**: Instrument sounds approximated using the custom APU without SoundFonts
+- **Audio output**: Pico Console V2 audio system
 
-- Input:
-    - 16 buttons (Nintendo-style ABXY layout)
-    - 2 joysticks
-    - Touchscreen
-    - 6-axis IMU
+## Controls
 
-- Storage:
-    - microSD ([carlk3/no-OS-FatFS-SD-SDIO-SPI-RPi-Pico](https://github.com/carlk3/no-OS-FatFS-SD-SDIO-SPI-RPi-Pico))
-
-- Other:
-    - Temperture monitoring
-    - Battery monitoring
-    - IR communication (RAW, NEC)
-    - Designed for extensibility (at southbridge)
-        - Qwiic/STEMMA QT Compatible connector
-        - HSTX connector (0.5mm pitch 10pin FPC connector)
-        - and some GPIO pads..
-    - USB HID (Powered by TinyUSB)
-
-This project focuses on exploring scalable embedded system design, including multi-processor coordination, custom protocols, and full-stack bare-metal development.
+| Action                | Joypad              |
+|-----------------------|---------------------|
+| Resume or select file | A                   |
+| Pause                 | B                   |
+| Volume Up             | L or START          |
+| Volume Down           | R or SELECT         |
+| Exit                  | SUB2                |
 
 ## How to build & upload firmware
 
@@ -74,19 +62,17 @@ git clone --recurse-submodules https://github.com/Crem2y/pico-console-v2.git
 ./pico_clean.sh
 ```
 
-## Photos
-- working!
+## Hardware
 
-## Schematics & PCB
-- See [pico-console-v2-pcb](https://github.com/Crem2y/pico-console-v2-pcb) for details.
+This application runs on the Pico Console V2 platform.
 
----
+- [Pico Console V2 Firmware](https://github.com/Crem2y/pico-console-v2)
+- [RP2350A Main Board](https://github.com/Crem2y/rp2350a_main_board)
+- [Pico Console V2 PCB](https://github.com/Crem2y/pico-console-v2-pcb)
 
 ## License
 - This project is licensed under the MIT License.  
 - See [LICENSE](./LICENSE) for details.
-
----
 
 ### Third-party components
 - Thank you to the many open-source contributors.
