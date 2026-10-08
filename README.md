@@ -4,6 +4,8 @@
 
 [![Build test](https://github.com/Crem2y/pico-console-v2-midi/actions/workflows/build_test.yml/badge.svg)](https://github.com/Crem2y/pico-console-v2-midi/actions/workflows/build_test.yml)
 
+A MIDI player for the [Pico Console V2](https://github.com/Crem2y/pico-console-v2) handheld platform.
+
 This project plays MIDI files using the platform's custom APU without SoundFonts.
 MIDI events are translated into APU commands to approximate instrument sounds through synthesized audio.
 
@@ -43,7 +45,7 @@ sudo apt install cmake python3 build-essential gcc-arm-none-eabi libnewlib-arm-n
 ```
 2. Clone this repository with submodules:
 ```bash
-git clone --recurse-submodules https://github.com/Crem2y/pico-console-v2.git
+git clone --recurse-submodules https://github.com/Crem2y/pico-console-v2-midi.git
 ```
 3. Launch the build script:
 ```bash
