@@ -1,6 +1,6 @@
 # Pico Console V2 MIDI
 
-![Front view](doc/front.jpg)
+![Front view](doc/playing.jpg)
 
 [![Build test](https://github.com/Crem2y/pico-console-v2-midi/actions/workflows/build_test.yml/badge.svg)](https://github.com/Crem2y/pico-console-v2-midi/actions/workflows/build_test.yml)
 
@@ -8,6 +8,14 @@ A MIDI player for the [Pico Console V2](https://github.com/Crem2y/pico-console-v
 
 This project plays MIDI files using the platform's custom APU without SoundFonts.
 MIDI events are translated into APU commands to approximate instrument sounds through synthesized audio.
+
+## Audio Demo
+
+Audio recorded from Pico Console V2's custom APU, without SoundFonts.
+
+[Listen to the audio demo](doc/demo_overture-2021.wav)
+
+**MIDI source:** [overture-2021.mid](https://github.com/m-malandro/CC0-midis/blob/main/midis/overture-2021.mid) (CC0 1.0 Universal)
 
 ## Features
 
@@ -33,8 +41,8 @@ MIDI events are translated into APU commands to approximate instrument sounds th
 |-----------------------|---------------------|
 | Resume or select file | A                   |
 | Pause                 | B                   |
-| Volume Up             | L or START          |
-| Volume Down           | R or SELECT         |
+| Volume Up             | R or START          |
+| Volume Down           | L or SELECT         |
 | Exit                  | SUB2                |
 
 ## How to build & upload firmware
